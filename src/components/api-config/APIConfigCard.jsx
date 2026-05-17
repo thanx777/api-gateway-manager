@@ -29,7 +29,9 @@ export default function APIConfigCard({ config, onEdit, onDelete, onToggle }) {
       
       // 2. 呼出 CC 控制台终端
       const launchRes = await fetch('http://localhost:3001/api/launch-cc', {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workDir: config.workDir || '' })
       });
       if (!launchRes.ok) throw new Error('呼出终端失败');
       

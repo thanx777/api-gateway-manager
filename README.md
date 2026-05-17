@@ -51,7 +51,7 @@
 - 完整实现 Anthropic Messages API (`/v1/messages`)，让 Claude Code 透明对接任意模型
 - 兼容 OpenAI Chat Completions API (`/v1/chat/completions`)，支持 Cursor / CodeX / Continue 等工具
 - 自动 `max_tokens` 截断保护（默认 8192，防止第三方模型报错）
-- 一键拉起 Claude Code，自动注入环境变量
+- 一键拉起 Claude Code，自动注入环境变量，支持指定工作目录
 
 ### 🧪 API 可视化调试器
 
@@ -84,6 +84,7 @@
 **第三步：使用**
 
 - **Claude Code 用户**：在 API 卡片右上角点击 **[拉起 CC]** 按钮，系统自动拉起终端并注入环境变量，开箱即用
+- **指定工作目录**：在 API 配置中添加"工作目录"，拉起 CC 后终端将在该目录下启动。留空则默认使用当前项目目录
 - **Cursor / CodeX / Continue 用户**：在 IDE 插件的 "Custom Model / Base URL" 中填写 `http://localhost:3001/v1`
 
 ### 方式二：手动启动
@@ -183,6 +184,35 @@ api-gateway-manager/
 3. 转发到目标 AI 服务，接收响应
 4. 将响应 **反转换** 为 Anthropic 格式返回给 Claude Code
 5. 前端管理面板提供可视化配置和调试能力
+
+> ⚠️ **配置优先级**：Claude Code 加载配置的顺序为 `~\.claude\settings.json`（用户级）→ `.claude\settings.json`（项目级）→ CMD 环境变量，**用户级优先级最高**。启动 CC 前请确保用户级配置不会覆盖代理的环境变量，详见 [常见问题](#常见问题)。
+
+---
+
+## ⚠️ 常见问题
+
+### 拉起 CC 后显示的不是代理模型？
+
+**现象**：CC 界面显示 `deepseek-v4-pro` 等非代理模型名，请求没有经过代理，也无 watermark。
+
+**根因**：Claude Code 配置优先级 `~/.claude/settings.json`（用户级）**高于** CMD 环境变量和项目级 `.claude/settings.json`。如果用户级配置中设置了 `ANTHROPIC_BASE_URL` 指向其他 API，代理注入的环境变量会被覆盖。
+
+**解决**：确保 `%USERPROFILE%\.claude\settings.json` 中没有与代理冲突的 `env` 字段，或将其清空为 `{}`。代理启动 CC 时会自动注入正确的环境变量。
+
+```powershell
+# 查看当前用户级 CC 配置
+type %USERPROFILE%\.claude\settings.json
+
+# 如果 env 中有 ANTHROPIC_BASE_URL 指向非本地地址，备份后清空
+copy %USERPROFILE%\.claude\settings.json %USERPROFILE%\.claude\settings.json.bak
+echo {} > %USERPROFILE%\.claude\settings.json
+```
+
+> 💡 恢复直连时，把备份文件还原即可。
+
+### Auth conflict 警告
+
+CC 启动时出现 `Both a token (ANTHROPIC_AUTH_TOKEN) and an API key (ANTHROPIC_API_KEY) are set` 警告。这是因为用户级配置中留下了 `ANTHROPIC_AUTH_TOKEN`，与代理的 `ANTHROPIC_API_KEY` 冲突。清除用户级配置即可消除。
 
 ---
 

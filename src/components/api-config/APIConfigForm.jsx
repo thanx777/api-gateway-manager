@@ -15,6 +15,7 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
     model: '',
     maxTokens: '',
     temperature: '',
+    workDir: '',
   });
 
   const [errors, setErrors] = useState({});
@@ -29,6 +30,7 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
         model: config.model || '',
         maxTokens: config.maxTokens || '',
         temperature: config.temperature || '',
+        workDir: config.workDir || '',
       });
     }
   }, [config]);
@@ -101,6 +103,7 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
       model: formData.model.trim() || undefined,
       maxTokens: formData.maxTokens ? parseInt(formData.maxTokens) : undefined,
       temperature: formData.temperature ? parseFloat(formData.temperature) : undefined,
+      workDir: formData.workDir.trim() || undefined,
     });
   };
 
@@ -213,6 +216,14 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
               placeholder="1.0"
             />
           </div>
+
+          <Input
+            label="工作目录 (可选)"
+            name="workDir"
+            value={formData.workDir}
+            onChange={handleChange}
+            placeholder="CC 启动后的工作路径，留空则为当前目录"
+          />
 
           <div className="flex items-center justify-end space-x-4 pt-4 border-t border-white/10">
             <Button variant="ghost" type="button" onClick={onClose}>

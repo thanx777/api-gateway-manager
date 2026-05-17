@@ -124,11 +124,16 @@ app.post('/api/apply-config', (req, res) => {
 });
 
 app.post('/api/launch-cc', (req, res) => {
-  // On Windows, start a new CMD with environment variables pointing to this proxy
-  const cmd = `start "Claude Code" cmd /k "chcp 65001 >nul && cls && echo =================================================== && echo   Claude Code 已链接至 API 网关！ && echo   当前模型: ${currentConfig.model} && echo =================================================== && set ANTHROPIC_AUTH_TOKEN=dummy && set ANTHROPIC_BASE_URL=http://127.0.0.1:${PORT} && set ANTHROPIC_API_KEY=dummy && claude"`;
+  const { workDir } = req.body;
+
+  const cmd = `start "Claude Code" cmd /k "chcp 65001 >nul && cls && echo =================================================== && echo   Claude Code 已链接至 API 网关！ && echo   当前模型: ${currentConfig.model} && echo =================================================== && set ANTHROPIC_BASE_URL=http://127.0.0.1:${PORT} && set ANTHROPIC_API_KEY=dummy && claude"`;
+
+  const execOptions = {};
+  if (workDir) execOptions.cwd = workDir;
 
   console.log('[Proxy] 正在拉起 Claude Code...');
-  exec(cmd, (error) => {
+  if (workDir) console.log(`  工作目录: ${workDir}`);
+  exec(cmd, execOptions, (error) => {
     if (error) {
       console.error('启动 CC 失败:', error);
       return res.status(500).json({ success: false, error: error.message });
