@@ -7,6 +7,9 @@ import { transformClaudeToOpenAI, parseOpenAIResponse } from './src/utils/transf
 
 dotenv.config();
 
+// 清除继承来的冲突环境变量，确保子进程（包括 CC）不会拿到脏的 env
+delete process.env.ANTHROPIC_AUTH_TOKEN;
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -18,10 +21,59 @@ const PORT = process.env.PORT || 3001;
 // to a safe ceiling. Override with MAX_OUTPUT_TOKENS env var.
 const MAX_OUTPUT_TOKENS = parseInt(process.env.MAX_OUTPUT_TOKENS) || 8192;
 
+// 水印正则 — 匹配 [本地网关 — 实际模型: xxx]
+const WATERMARK_RE = /\n*---\n\*\[本地网关 — 实际模型: .*?\]\*\n*/g;
+
+/**
+ * 递归剥离消息中的水印
+ */
+function stripWatermark(obj) {
+  if (typeof obj === 'string') {
+    return obj.replace(WATERMARK_RE, '');
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(stripWatermark);
+  }
+  if (obj && typeof obj === 'object') {
+    const cleaned = {};
+    for (const key of Object.keys(obj)) {
+      cleaned[key] = stripWatermark(obj[key]);
+    }
+    return cleaned;
+  }
+  return obj;
+}
+
+/**
+ * 从文本中提取 JSON 格式的函数调用，转为 tool_use 块。
+ * 用于不原生支持 function calling 的模型——它们可能在文本里输出 JSON。
+ */
+function tryExtractToolCalls(text) {
+  // 匹配 {"type": "function" 或 {"type":"function" 开头的 JSON 对象
+  const re = /\{\s*"type"\s*:\s*"function"\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^}]*\})/g;
+  const tools = [];
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const name = match[1];
+    let input = {};
+    try {
+      input = JSON.parse(match[2]);
+    } catch {}
+    tools.push({
+      type: 'tool_use',
+      id: `toolu_${Date.now()}_${tools.length}`,
+      name,
+      input,
+    });
+  }
+  return tools.length > 0 ? tools : null;
+}
+
 let currentConfig = {
   apiUrl: process.env.TARGET_API_URL || '',
   apiKey: process.env.TARGET_API_KEY || '',
-  model: process.env.DEFAULT_MODEL || ''
+  model: process.env.DEFAULT_MODEL || '',
+  toolsEnabled: true
 };
 
 /**
@@ -115,6 +167,7 @@ app.post('/api/apply-config', (req, res) => {
   }
   if (apiKey) currentConfig.apiKey = apiKey;
   if (model) currentConfig.model = model;
+  if (req.body.toolsEnabled !== undefined) currentConfig.toolsEnabled = req.body.toolsEnabled;
 
   console.log('[Proxy] 配置更新:');
   console.log(`  目标: ${currentConfig.apiUrl}`);
@@ -128,7 +181,19 @@ app.post('/api/launch-cc', (req, res) => {
 
   const cmd = `start "Claude Code" cmd /k "chcp 65001 >nul && cls && echo =================================================== && echo   Claude Code 已链接至 API 网关！ && echo   当前模型: ${currentConfig.model} && echo =================================================== && set ANTHROPIC_BASE_URL=http://127.0.0.1:${PORT} && set ANTHROPIC_API_KEY=dummy && claude"`;
 
-  const execOptions = {};
+  const execOptions = {
+    env: { ...process.env }
+  };
+  // 清除可能和代理冲突的环境变量
+  delete execOptions.env.ANTHROPIC_AUTH_TOKEN;
+  delete execOptions.env.ANTHROPIC_BASE_URL;
+  delete execOptions.env.ANTHROPIC_MODEL;
+  delete execOptions.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+  delete execOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  delete execOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+  execOptions.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${PORT}`;
+  execOptions.env.ANTHROPIC_API_KEY = 'dummy';
+
   if (workDir) execOptions.cwd = workDir;
 
   console.log('[Proxy] 正在拉起 Claude Code...');
@@ -214,11 +279,14 @@ app.post('/v1/messages', async (req, res) => {
 
     console.log(`[Proxy] 原模型: ${originalRequestedModel}, 消息数: ${(claudeRequest.messages || []).length}`);
 
+    // 剥离历史消息中的水印，避免目标模型回传导致水印重复
+    claudeRequest.messages = stripWatermark(claudeRequest.messages);
+
     // Transform Claude → OpenAI
-    const openAIRequest = transformClaudeToOpenAI(claudeRequest, { maxOutputTokens: MAX_OUTPUT_TOKENS });
+    const openAIRequest = transformClaudeToOpenAI(claudeRequest, { maxOutputTokens: MAX_OUTPUT_TOKENS, toolsEnabled: currentConfig.toolsEnabled });
     openAIRequest.model = currentConfig.model;
 
-    console.log(`[Proxy] 转发至: ${currentConfig.apiUrl}, 模型: ${currentConfig.model}, max_tokens: ${openAIRequest.max_tokens}`);
+    console.log(`[Proxy] 转发至: ${currentConfig.apiUrl}, 模型: ${currentConfig.model}, tools: ${currentConfig.toolsEnabled}, max_tokens: ${openAIRequest.max_tokens}`);
 
     const targetResponse = await fetch(currentConfig.apiUrl, {
       method: 'POST',
@@ -272,6 +340,28 @@ app.post('/v1/messages', async (req, res) => {
 
     const claudeResponse = parseOpenAIResponse(responseData);
     claudeResponse.model = originalRequestedModel;
+
+    // 如果目标模型不支持原生 function calling，尝试从文本中提取 JSON tool calls
+    const hasToolUse = claudeResponse.content.some(c => c.type === 'tool_use');
+    if (!hasToolUse) {
+      for (let i = 0; i < claudeResponse.content.length; i++) {
+        const block = claudeResponse.content[i];
+        if (block.type === 'text' && /\{\s*"type"\s*:\s*"function"/.test(block.text)) {
+          const extracted = tryExtractToolCalls(block.text);
+          if (extracted) {
+            const before = block.text.slice(0, block.text.indexOf('{"type"'));
+            const after = block.text.slice(block.text.lastIndexOf('}') + 1);
+            block.text = (before + after).trim();
+            // 去掉可能残留的 trailing comma / whitespace
+            claudeResponse.content.splice(i + 1, 0, ...extracted);
+            break;
+          }
+        }
+      }
+    }
+
+    // 先剥离响应中可能残留的旧水印，再加新水印
+    claudeResponse.content = stripWatermark(claudeResponse.content);
 
     // Add watermark
     if (claudeResponse.content && claudeResponse.content.length > 0) {

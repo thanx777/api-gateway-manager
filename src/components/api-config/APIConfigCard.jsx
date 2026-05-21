@@ -22,7 +22,8 @@ export default function APIConfigCard({ config, onEdit, onDelete, onToggle }) {
         body: JSON.stringify({
           apiUrl: config.baseUrl,
           apiKey: config.apiKey,
-          model: config.model
+          model: config.model,
+          toolsEnabled: config.toolsEnabled !== undefined ? config.toolsEnabled : true
         })
       });
       if (!applyRes.ok) throw new Error('同步配置失败，请确认后端已启动');

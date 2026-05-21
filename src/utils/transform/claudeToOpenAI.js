@@ -164,7 +164,7 @@ export function transformClaudeToOpenAI(request, options = {}) {
   // We strip tools by default so CC falls back to parsing tool calls from
   // text output, which works with any model that can follow instructions.
   // To enable native tools on supported providers, set TOOLS_ENABLED=true in .env
-  if (request.tools && request.tools.length > 0 && process.env.TOOLS_ENABLED === 'true') {
+  if (request.tools && request.tools.length > 0 && options.toolsEnabled !== false) {
     transformed.tools = request.tools.map(tool => ({
       type: 'function',
       function: {

@@ -53,6 +53,7 @@ export function APIConfigProvider({ children }) {
   const addConfig = (config) => {
     const newConfig = {
       ...config,
+      toolsEnabled: config.toolsEnabled !== undefined ? config.toolsEnabled : true,
       id: crypto.randomUUID(),
       createdAt: Date.now(),
       updatedAt: Date.now(),

@@ -16,6 +16,7 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
     maxTokens: '',
     temperature: '',
     workDir: '',
+    toolsEnabled: true,
   });
 
   const [errors, setErrors] = useState({});
@@ -31,6 +32,7 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
         maxTokens: config.maxTokens || '',
         temperature: config.temperature || '',
         workDir: config.workDir || '',
+        toolsEnabled: config.toolsEnabled !== undefined ? config.toolsEnabled : true,
       });
     }
   }, [config]);
@@ -104,6 +106,7 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
       maxTokens: formData.maxTokens ? parseInt(formData.maxTokens) : undefined,
       temperature: formData.temperature ? parseFloat(formData.temperature) : undefined,
       workDir: formData.workDir.trim() || undefined,
+      toolsEnabled: formData.toolsEnabled,
     });
   };
 
@@ -224,6 +227,24 @@ export default function APIConfigForm({ config, onSubmit, onClose }) {
             onChange={handleChange}
             placeholder="CC 启动后的工作路径，留空则为当前目录"
           />
+
+          <div className="p-4 rounded-lg bg-white/5 border border-white/10">
+            <label className="flex items-center space-x-3 cursor-pointer">
+              <input
+                type="checkbox"
+                name="toolsEnabled"
+                checked={formData.toolsEnabled}
+                onChange={(e) => setFormData(prev => ({ ...prev, toolsEnabled: e.target.checked }))}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500 cursor-pointer"
+              />
+              <div>
+                <span className="text-sm font-medium text-gray-200">启用工具调用</span>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  目标模型需支持原生 function calling。如果不支持（报错 "unknown parameter: tools"），请关闭此项。
+                </p>
+              </div>
+            </label>
+          </div>
 
           <div className="flex items-center justify-end space-x-4 pt-4 border-t border-white/10">
             <Button variant="ghost" type="button" onClick={onClose}>

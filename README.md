@@ -44,6 +44,7 @@
 - 同一格式类别（OpenAI 兼容）之间直接互转
 - 自动处理消息格式、工具调用（Tool Use）、token 计数等差异
 - 智能处理 SSE 流式响应合并为标准 JSON
+- **通用工具调用兜底**：目标模型不支持原生 function calling 时，自动从文本中提取 JSON 格式的 tool call 并转换为标准 tool_use，确保命令执行可用
 
 ### 🌐 本地代理引擎
 
@@ -111,9 +112,10 @@ node server.js
 | `TARGET_API_KEY` | 目标 API 密钥（可通过 UI 覆盖） | - |
 | `DEFAULT_MODEL` | 默认模型（可通过 UI 覆盖） | - |
 | `MAX_OUTPUT_TOKENS` | 输出 token 上限 | 8192 |
-| `TOOLS_ENABLED` | 启用原生工具调用 | false |
 
 > 💡 环境变量仅为初始默认值，所有配置均可通过前端 UI 动态修改，无需重启服务。
+>
+> 🔧 **工具调用**：在前端 API 配置表单中通过"启用工具调用"复选框按配置独立控制，**默认开启**。目标模型支持原生 function calling 时直接生效；不支持时代理会自动从文本中提取 JSON tool call 兜底。
 
 ---
 
@@ -169,6 +171,7 @@ api-gateway-manager/
                         │  │ max_tokens 截断       │  │
                         │  │ SSE 流合并            │  │
                         │  │ Tool Use 适配         │  │
+                        │  │ Text→ToolUse 兜底     │  │
                         │  └──────────────────────┘  │
                         └──────────────────────────┘
                                    ▲
@@ -212,7 +215,16 @@ echo {} > %USERPROFILE%\.claude\settings.json
 
 ### Auth conflict 警告
 
-CC 启动时出现 `Both a token (ANTHROPIC_AUTH_TOKEN) and an API key (ANTHROPIC_API_KEY) are set` 警告。这是因为用户级配置中留下了 `ANTHROPIC_AUTH_TOKEN`，与代理的 `ANTHROPIC_API_KEY` 冲突。清除用户级配置即可消除。
+CC 启动时出现 `Both a token (ANTHROPIC_AUTH_TOKEN) and an API key (ANTHROPIC_API_KEY) are set` 警告。代理服务启动时会**自动清除**进程中的 `ANTHROPIC_AUTH_TOKEN`，拉起 CC 时也会在子进程环境中物理删除该变量。如果仍有问题，请清除终端会话中的残留环境变量：
+
+```cmd
+set ANTHROPIC_AUTH_TOKEN=
+set ANTHROPIC_BASE_URL=
+```
+
+### 工具调用不生效
+
+部分模型不支持原生 function calling，工具调用可能不生效。代理内置 **Text→ToolUse 智能兜底**：如果模型在文本中输出了 JSON 格式的函数调用，代理会自动提取并转为标准 tool_use 块。前端 API 配置中提供"启用工具调用"开关，可按配置独立控制。
 
 ---
 
