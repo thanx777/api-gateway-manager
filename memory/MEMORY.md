@@ -1,0 +1,2 @@
+- [.bat 文件编码](bat-file-encoding.md) — Windows .bat 必须纯 ASCII，中文会乱码
+- [非 Claude 模型工具调用](tool-calling-non-claude-models.md) — 响应阶段也必须过滤 tool_use，前端配置覆盖服务端默认

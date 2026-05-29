@@ -43,8 +43,10 @@
 - **Claude ↔ OpenAI** 双向协议转换
 - 同一格式类别（OpenAI 兼容）之间直接互转
 - 自动处理消息格式、工具调用（Tool Use）、token 计数等差异
-- 智能处理 SSE 流式响应合并为标准 JSON
-- **通用工具调用兜底**：目标模型不支持原生 function calling 时，自动从文本中提取 JSON 格式的 tool call 并转换为标准 tool_use，确保命令执行可用
+- **通用 Tool Schema 拍平**：对嵌套对象/数组 schema 自动拍平为 JSON 字符串，让非 Claude 模型（Nemotron 等）也能正确填写工具参数；响应阶段按原始 schema 自动重建为 CC 期望格式
+- **工具调用防护**：在系统提示开头注入规范（问候/闲聊 → 纯文本，模糊请求 → `AskUserQuestion` 澄清），防止模型误调工具
+- **智能空调用过滤**：过滤 input 为空的多余 tool_use，但保留无参工具（如 `EnterPlanMode`）的合法空参数
+- **SSE 流式响应**：自动将上游 SSE 流转换为 Anthropic SSE 格式，让 CC 获得逐字输出效果
 
 ### 🌐 本地代理引擎
 
@@ -53,6 +55,7 @@
 - 兼容 OpenAI Chat Completions API (`/v1/chat/completions`)，支持 Cursor / CodeX / Continue 等工具
 - 自动 `max_tokens` 截断保护（默认 8192，防止第三方模型报错）
 - 一键拉起 Claude Code，自动注入环境变量，支持指定工作目录
+- **模型选择建议**：推荐 NVIDIA 的 Nemotron 系列（如 `nvidia/llama-3.3-nemotron-super-49b-v1.5`），专为 agentic 任务和工具调用后训练，与 CC 兼容性最好。避免 Llama-4-Maverick（乱调工具）、Qwen（prompt template 冲突）
 
 ### 🧪 API 可视化调试器
 
@@ -115,7 +118,7 @@ node server.js
 
 > 💡 环境变量仅为初始默认值，所有配置均可通过前端 UI 动态修改，无需重启服务。
 >
-> 🔧 **工具调用**：在前端 API 配置表单中通过"启用工具调用"复选框按配置独立控制，**默认开启**。目标模型支持原生 function calling 时直接生效；不支持时代理会自动从文本中提取 JSON tool call 兜底。
+> 🔧 **工具调用**：在前端 API 配置表单中通过"启用工具调用"复选框按配置独立控制。开启后代理会自动注入工具使用规范（防乱调）+ Schema 拍平（保参数正确）+ 空调用过滤（去噪音）。推荐搭配 Nemotron 系列模型使用。
 
 ---
 
@@ -152,6 +155,7 @@ api-gateway-manager/
 │           ├── claudeToOpenAI.js     # Claude → OpenAI 转换
 │           └── openaiToClaude.js     # OpenAI → Claude 转换
 ├── start.bat                    # Windows 一键启动脚本
+├── restart.bat                  # 重启脚本（杀旧进程后重启）
 ├── .env.example                 # 环境变量模板
 ├── vite.config.js               # Vite 构建配置
 ├── tailwind.config.js           # Tailwind CSS 配置
@@ -165,13 +169,15 @@ api-gateway-manager/
 ```
 ┌─────────────────┐     ┌──────────────────────────┐     ┌──────────────────┐
 │  Claude Code    │────▶│  本地代理网关 (localhost:3001) │────▶│  目标 AI 服务    │
-│  Cursor / CodeX │     │                            │     │  (OpenAI/DS/GLM) │
+│  Cursor / CodeX │     │                            │     │  (NVIDIA NIM等)  │
 └─────────────────┘     │  ┌──────────────────────┐  │     └──────────────────┘
-                        │  │ Claude → OpenAI 转换  │  │
-                        │  │ max_tokens 截断       │  │
-                        │  │ SSE 流合并            │  │
-                        │  │ Tool Use 适配         │  │
-                        │  │ Text→ToolUse 兜底     │  │
+                        │  │ Claude ↔ OpenAI 转换   │  │
+                        │  │ Tool Schema 拍平/重建  │  │
+                        │  │ 工具调用防护注入       │  │
+                        │  │ SSE 流式转换           │  │
+                        │  │ max_tokens 截断        │  │
+                        │  │ 空 tool_use 智能过滤   │  │
+                        │  │ 水印注入               │  │
                         │  └──────────────────────┘  │
                         └──────────────────────────┘
                                    ▲
@@ -222,9 +228,13 @@ set ANTHROPIC_AUTH_TOKEN=
 set ANTHROPIC_BASE_URL=
 ```
 
-### 工具调用不生效
+### 工具调用不生效 / 乱调工具
 
-部分模型不支持原生 function calling，工具调用可能不生效。代理内置 **Text→ToolUse 智能兜底**：如果模型在文本中输出了 JSON 格式的函数调用，代理会自动提取并转为标准 tool_use 块。前端 API 配置中提供"启用工具调用"开关，可按配置独立控制。
+**模型乱调工具**（如"你好"触发 save-memory）：使用推荐模型 `nvidia/llama-3.3-nemotron-super-49b-v1.5`，代理内置的工具调用防护会在系统提示中注入使用规范，并自动过滤 input 为空的多余 tool_use。
+
+**工具调用参数不对**（如 AskUserQuestion 输出空选项）：代理内置 **Tool Schema 通用拍平**，将复杂嵌套 schema 自动简化为模型能处理的格式，响应阶段按原始 schema 重建。所有工具自动适配，无需单独配置。
+
+**不支持 function calling 的模型**：如果目标模型完全不支持原生 function calling，代理会从文本中提取 JSON 格式的 tool call 兜底。前端 API 配置中提供"启用工具调用"开关，可按配置独立控制。
 
 ---
 
