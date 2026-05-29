@@ -1,0 +1,171 @@
+工作目录(path)功能添加 — 失败尝试记录
+========================================
+
+目标：在 APIConfigForm 加一个"工作目录"输入框，点击"拉起 CC"后 Claude Code 在指定目录启动。
+每次只改 3 个文件：server.js、APIConfigCard.jsx、APIConfigForm.jsx。
+每次前端编译都通过（vite build 无报错）。
+每次失败后的现象：拉起的 CC 界面显示 deepseek-v4-pro[1m]，无法通过代理走目标模型，无 watermark。
+
+
+尝试 1：POST body 传 workDir + exec options.cwd
+------------------------------------------------
+server.js:
+  const { workDir } = req.body;           // 从 body 读取
+  const execOptions = {};
+  if (workDir) execOptions.cwd = workDir;
+  exec(cmd, execOptions, callback)
+
+APIConfigCard.jsx:
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ workDir: config.workDir || '' })
+
+问题分析：
+  加了 Content-Type: application/json → 触发 CORS 预检（OPTIONS）
+  → 但 CORS 配置正确，预检通过
+  → 仍失败，原因不明
+
+结果：❌
+
+
+尝试 2：URL query 传 workDir + exec options.cwd
+------------------------------------------------
+server.js:
+  const workDir = req.query.workDir;      // 从 query string 读取
+  const execOptions = {};
+  if (workDir) execOptions.cwd = workDir;
+  exec(cmd, execOptions, callback)
+
+APIConfigCard.jsx:
+  const workDirParam = config.workDir ? `?workDir=${encodeURIComponent(config.workDir)}` : '';
+  fetch(`http://localhost:3001/api/launch-cc${workDirParam}`, { method: 'POST' })
+  // 无额外 header，和原版一样的简单 POST
+
+问题分析：
+  不触发 CORS 预检，CMD 命令一字未改
+  → 理应完全不影响代理功能
+  → 仍失败
+
+结果：❌
+
+
+尝试 3：CMD 里加 cd /d（单引号）
+------------------------------------------------
+server.js:
+  const cdCmd = workDir ? `cd /d "${workDir}" && ` : '';
+  // CMD 命令：... && cd /d "D:\path" && claude
+
+问题分析：
+  cd /d "D:\path" 中的双引号与外层 cmd /k "..." 的双引号冲突
+  → CMD 命令被截断
+  → env vars 设置失败 → CC 绕过代理直连 DeepSeek
+
+结果：❌（这是用户明确指出的 bug："你的cd加错一个窗口了"）
+
+
+尝试 4：CMD 里加 cd /d（双引号转义 ""）
+------------------------------------------------
+server.js:
+  const cdCmd = workDir ? `cd /d ""${workDir}"" && ` : '';
+  // CMD 里 "" 表示字面双引号
+
+问题分析：
+  CMD "" 转义理论上正确，但嵌套引号仍可能解析异常
+  → 仍失败
+
+结果：❌
+
+
+尝试 5：URL query + exec options.cwd（重试尝试 2 的方案）
+------------------------------------------------
+与尝试 2 完全相同的方案
+
+问题分析：
+  理论上最安全的方案：CMD 命令零改动、无 CORS 预检
+  → 仍失败
+
+结果：❌
+
+
+尝试 6：改 ANTHROPIC_AUTH_TOKEN 清空（修复认证冲突）
+------------------------------------------------
+server.js 启动命令：
+  set ANTHROPIC_AUTH_TOKEN=  → 清空，不设 dummy
+  set ANTHROPIC_API_KEY=dummy
+  set ANTHROPIC_BASE_URL=http://127.0.0.1:3001
+
+问题分析：
+  CC 启动后读 .claude\settings.json 的 env 字段
+  → ANTHROPIC_AUTH_TOKEN 被重新设为 sk-xxx
+  → ANTHROPIC_BASE_URL 被覆盖为 https://api.deepseek.com/anthropic
+  → 代理被绕过
+
+结果：❌
+
+
+尝试 7：claude --bare（禁用 settings.json 部分功能）
+------------------------------------------------
+server.js 启动命令：
+  claude --bare
+  // --bare 模式下只认 ANTHROPIC_API_KEY，忽略 ANTHROPIC_AUTH_TOKEN
+
+问题分析：
+  --bare 确实解决了认证冲突
+  → 但阉割了 CLAUDE.md、自动记忆、hooks、LSP 等功能
+  → 用户需要完整版功能
+
+结果：功能不完整 ❌
+
+
+尝试 8：claude --settings "{}"（替换 settings.json 为空配置）
+------------------------------------------------
+server.js 启动命令：
+  claude --settings "{}"
+
+问题分析：
+  CMD 双引号嵌套转义复杂（\"\"{}\"\"）
+  → 转义可能不正确
+  → CC 仍读取默认 settings.json
+
+结果：❌
+
+
+尝试 9：exec options.env 物理删除 ANTHROPIC_AUTH_TOKEN
+------------------------------------------------
+server.js:
+  const execOptions = {
+    env: { ...process.env, ANTHROPIC_BASE_URL: ..., ANTHROPIC_API_KEY: 'dummy' }
+  };
+  delete execOptions.env.ANTHROPIC_AUTH_TOKEN;    // 物理删除 token
+  exec(cmd, execOptions, callback)
+
+问题分析：
+  Node.js 层面删除了 AUTH_TOKEN
+  → 但 CC 启动后读 settings.json 又重新设置了 AUTH_TOKEN 和 BASE_URL
+  → 代理被绕过
+
+结果：❌
+
+
+根本原因总结
+========================================
+1. 用户的 .claude\settings.json 里 env 字段设置了：
+     ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+     ANTHROPIC_AUTH_TOKEN: sk-xxx
+   CC 启动后读取该文件，覆盖代理设置的 env vars。
+
+2. 工作目录功能本身（无论用 query、body、cd、exec cwd 哪种方式）
+   理论上不应该影响代理，但每次改动后代理就失效。
+   可能的环境因素：浏览器缓存、服务器未重启、Vite 热更新不一致。
+
+3. 远程调试的局限：无法看到用户浏览器的实际 console 报错，
+   无法确认服务器是否加载了最新代码。
+
+
+可行的本地手动方案
+========================================
+在 server.js 第 128 行的 claude 前面手工加 cd /d：
+
+  const cmd = `... set ANTHROPIC_API_KEY=dummy && cd /d 你的路径 && claude"`;
+
+注意 cd /d 后面路径不要加引号（避免嵌套引号问题）。
+先硬编码路径测试，通过后再改为读取 query 参数。
